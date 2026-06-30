@@ -1,0 +1,404 @@
+openapi: 3.1.0
+info:
+  title: SiberIndo CTI Collection Adapter Manager API
+  version: "1.0.0"
+  description: >
+    Central registry and health tracker for the per-module collection adapters of
+    the SiberIndo CTI platform. Adapters are registered and managed through this
+    REST API; their runtime health (last run, last status, last error,
+    findings_last_run) is maintained by two Kafka consumers that subscribe to the
+    existing collection.job.completed and collection.job.failed topics. Each
+    reported run is also appended to an immutable run-event history.
+
+    This service is a pure consumer: the Kafka Topic Catalog defines no
+    collection-request topic, so the on-demand trigger endpoint records intent and
+    returns 202 without publishing an event. Actual job dispatch is the collection
+    worker's responsibility.
+
+    All responses use the platform envelope: successful responses wrap the payload
+    in `{ "data": ..., "meta": { "request_id", "timestamp" } }`; errors return
+    `{ "error": { "code", "message", "details" }, "meta": { "request_id", "timestamp" } }`.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: adapters
+    description: Collection adapter registry and lifecycle.
+paths:
+  /v1/collection/adapters:
+    get:
+      tags: [adapters]
+      summary: List collection adapters
+      description: Returns the tenant's collection adapters, newest first. Requires the `adapter:read` permission.
+      parameters:
+        - name: module
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Module' }
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/AdapterStatus' }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: A list of adapters.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Adapter' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [adapters]
+      summary: Register a collection adapter
+      description: Registers a new collection adapter. Requires the `adapter:manage` permission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAdapterRequest' }
+      responses:
+        '201':
+          description: The registered adapter.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Adapter' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/collection/adapters/{id}:
+    get:
+      tags: [adapters]
+      summary: Get a collection adapter
+      description: Returns one adapter by id. Requires the `adapter:read` permission.
+      parameters:
+        - $ref: '#/components/parameters/AdapterId'
+      responses:
+        '200':
+          description: The adapter.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Adapter' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [adapters]
+      summary: Update a collection adapter
+      description: >
+        Partially updates the schedule and configuration reference of an adapter.
+        Only the provided fields are changed. Requires the `adapter:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/AdapterId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateAdapterRequest' }
+      responses:
+        '200':
+          description: Update acknowledged.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusAck' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/collection/adapters/{id}/pause:
+    post:
+      tags: [adapters]
+      summary: Pause a collection adapter
+      description: Moves an active adapter to the paused state. A retired adapter cannot be paused. Requires the `adapter:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/AdapterId'
+      responses:
+        '200':
+          description: The adapter is paused.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusAck' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/collection/adapters/{id}/resume:
+    post:
+      tags: [adapters]
+      summary: Resume a collection adapter
+      description: Moves a paused adapter back to the active state. A retired adapter cannot be resumed. Requires the `adapter:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/AdapterId'
+      responses:
+        '200':
+          description: The adapter is active.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusAck' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/collection/adapters/{id}/retire:
+    post:
+      tags: [adapters]
+      summary: Retire a collection adapter
+      description: Permanently retires an adapter. Retirement is terminal. Requires the `adapter:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/AdapterId'
+      responses:
+        '200':
+          description: The adapter is retired.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusAck' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/collection/adapters/{id}/trigger:
+    post:
+      tags: [adapters]
+      summary: Trigger an on-demand collection run
+      description: >
+        Records the intent to run an adapter on demand. The adapter must exist and
+        be active. No Kafka event is published (the Topic Catalog defines no
+        collection-request topic); actual job dispatch is the collection worker's
+        responsibility. Requires the `adapter:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/AdapterId'
+      responses:
+        '202':
+          description: The trigger intent was accepted.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusAck' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/collection/adapters/{id}/runs:
+    get:
+      tags: [adapters]
+      summary: List an adapter's run history
+      description: Returns the immutable collection-run history for an adapter, newest first. Requires the `adapter:read` permission.
+      parameters:
+        - $ref: '#/components/parameters/AdapterId'
+      responses:
+        '200':
+          description: The run history.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/RunEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    AdapterId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    Module:
+      type: string
+      enum: [dlm, clm, dwm, brm, phm]
+    AdapterStatus:
+      type: string
+      enum: [active, paused, retired, error]
+    Outcome:
+      type: string
+      enum: [completed, failed]
+    CreateAdapterRequest:
+      type: object
+      required: [module, adapter_type, name]
+      properties:
+        module: { $ref: '#/components/schemas/Module' }
+        adapter_type: { type: string, maxLength: 64, description: "Adapter implementation identifier (e.g. paste_site, certstream)." }
+        name: { type: string, maxLength: 255 }
+        schedule_cron:
+          type: string
+          maxLength: 128
+          nullable: true
+          description: Optional cron expression describing the adapter's schedule.
+        config_ref:
+          type: string
+          maxLength: 512
+          nullable: true
+          description: Optional opaque reference to the adapter's externally stored configuration.
+    UpdateAdapterRequest:
+      type: object
+      description: A partial update; omit a field to leave it unchanged.
+      properties:
+        schedule_cron:
+          type: string
+          maxLength: 128
+          nullable: true
+        config_ref:
+          type: string
+          maxLength: 512
+          nullable: true
+    Adapter:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        module: { $ref: '#/components/schemas/Module' }
+        adapter_type: { type: string }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/AdapterStatus' }
+        schedule_cron: { type: string, nullable: true }
+        config_ref: { type: string, nullable: true }
+        last_run_at: { type: string, format: date-time, nullable: true }
+        last_status: { type: string, nullable: true }
+        last_error: { type: string, nullable: true }
+        findings_last_run: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        created_by: { type: string, format: uuid, nullable: true }
+        updated_by: { type: string, format: uuid, nullable: true }
+      required: [id, tenant_id, module, adapter_type, name, status, created_at, updated_at]
+    RunEvent:
+      type: object
+      description: An immutable, append-only collection-run history entry derived from a Kafka event.
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        adapter_id: { type: string, format: uuid, nullable: true }
+        job_id: { type: string, format: uuid, nullable: true }
+        module: { type: string, nullable: true }
+        outcome: { $ref: '#/components/schemas/Outcome' }
+        findings_ingested: { type: integer, nullable: true }
+        errors_count: { type: integer, nullable: true }
+        detail: { type: string, nullable: true }
+        occurred_at: { type: string, format: date-time }
+      required: [id, tenant_id, outcome, occurred_at]
+    StatusAck:
+      type: object
+      properties:
+        status: { type: string }
+      required: [status]
+    Meta:
+      type: object
+      properties:
+        request_id: { type: string }
+        timestamp: { type: string, format: date-time }
+      required: [request_id, timestamp]
+    SuccessEnvelope:
+      type: object
+      properties:
+        data: {}
+        meta: { $ref: '#/components/schemas/Meta' }
+      required: [data, meta]
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - RESOURCE_NOT_FOUND
+                - CONFLICT
+                - BUSINESS_RULE_VIOLATION
+                - RATE_LIMIT_EXCEEDED
+                - INTERNAL_ERROR
+                - SERVICE_UNAVAILABLE
+            message: { type: string }
+            details: {}
+          required: [code, message]
+        meta: { $ref: '#/components/schemas/Meta' }
+      required: [error, meta]
+  responses:
+    ValidationError:
+      description: The request failed validation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: The token lacks the required permission.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: The adapter does not exist.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Conflict:
+      description: An adapter with that name already exists for the module.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }

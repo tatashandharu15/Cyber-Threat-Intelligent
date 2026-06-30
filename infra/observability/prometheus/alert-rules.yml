@@ -1,0 +1,177 @@
+# Prometheus alerting rules for the SiberIndo CTI/DRP platform.
+#
+# Implements the alerts from Architecture Blueprint section 8.4 and Infrastructure
+# Blueprint section 8.4 that are DERIVABLE from the metrics every Go service
+# exposes on /metrics today:
+#
+#   http_requests_total{service,method,route,code}              (counter)
+#   http_request_duration_seconds_bucket{service,method,route,le} + _count + _sum (histogram)
+#   go_goroutines, process_resident_memory_bytes,
+#   process_cpu_seconds_total, up                                (Go client / scrape defaults)
+#
+# The Prometheus `job` label is assumed to equal the service name (one scrape job
+# per service, see scrape config owned by the platform agent).
+#
+# Severity convention (maps to Infra Blueprint 8.4 / runbooks oncall.md):
+#   page      -> P1, immediate on-call page (PagerDuty)
+#   warning   -> P2, on-call acknowledges within 30 min
+#   info      -> P3, platform team during business hours
+#
+# Validate with:  promtool check rules infra/observability/prometheus/alert-rules.yml
+#
+# NOT IMPLEMENTED HERE (require exporters not yet wired into the scrape config —
+# owned by another agent; tracked so they are not forgotten):
+#   * Kafka consumer lag on finding.escalated (>10k)  -> needs kafka_consumer_lag
+#     from a Kafka exporter / MSK CloudWatch bridge (Arch BP 8.1 "Collection Metrics").
+#   * Aurora Global Database replication lag (>300s)  -> needs pg_replication_lag_seconds
+#     from the Aurora CloudWatch metrics bridge.
+#   * Aurora failover detected / Vault sealed / DWM Tor proxy down / PHM CT-log gap
+#     -> need RDS event, Vault health, and collection-pipeline exporters respectively.
+#   See docs/runbooks/incident-kafka-lag.md and incident-db-failover.md for the
+#   manual procedures until these exporters land.
+
+groups:
+  # ---------------------------------------------------------------------------
+  - name: cti-api-availability
+    rules:
+      - alert: ServiceDown
+        # up == 0 means Prometheus could not scrape the service /metrics endpoint.
+        expr: up{job=~".*-service|alert-engine|.+"} == 0
+        for: 1m
+        labels:
+          severity: page
+          tier: platform
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Prometheus has been unable to scrape {{ $labels.job }} ({{ $labels.instance }}) for over 1 minute (up == 0). The service is unreachable or crashed."
+          runbook: "docs/runbooks/incident-service-down.md"
+          dashboard: "Grafana: Service Health (uid cti-service-health)"
+
+      - alert: HighErrorRate
+        # 5xx ratio per service > 1% sustained. Arch BP 8.4 pages at 5%; Infra BP 8.4
+        # pages on-call (P2) at 1% for 5m — we alert at 1% (the tighter SLO bound).
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[5m]))
+            /
+            clamp_min(sum by (service) (rate(http_requests_total[5m])), 1)
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: page
+          tier: platform
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.service }}"
+          description: "{{ $labels.service }} 5xx ratio is {{ $value | humanizePercentage }} (>1%) over the last 5m, sustained 5m."
+          runbook: "docs/runbooks/incident-high-error-rate.md"
+          dashboard: "Grafana: CTI Platform Overview (uid cti-platform-overview) -> '5xx error rate by service'"
+
+      - alert: PlatformErrorRateCritical
+        # Platform-wide 5xx > 5% — Arch BP 8.4 P1 ("platform is degraded for users").
+        expr: |
+          (
+            sum(rate(http_requests_total{code=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total[5m])), 1)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: page
+          tier: platform
+        annotations:
+          summary: "Platform-wide 5xx error rate above 5%"
+          description: "Aggregate platform 5xx ratio is {{ $value | humanizePercentage }} (>5%) over 5m. Users are experiencing a degraded platform."
+          runbook: "docs/runbooks/incident-high-error-rate.md"
+          dashboard: "Grafana: CTI Platform Overview (uid cti-platform-overview)"
+
+      - alert: HighLatencyP95
+        # p95 request latency per service > 2s sustained 10m (Arch BP 8.4 / Infra BP 8.4).
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (service, le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          tier: platform
+        annotations:
+          summary: "High p95 latency on {{ $labels.service }}"
+          description: "{{ $labels.service }} p95 request latency is {{ $value | humanizeDuration }} (>2s) over 5m, sustained 10m."
+          runbook: "docs/runbooks/incident-high-error-rate.md"
+          dashboard: "Grafana: CTI Platform Overview (uid cti-platform-overview) -> 'p95 latency by service' / 'Top routes by p95 latency'"
+
+      - alert: NoTrafficReceived
+        # A service that is up but serving zero requests for 15m may be mis-routed at
+        # Kong, mis-configured, or wedged. Informational (avoids false ServiceDown noise).
+        expr: |
+          sum by (service) (rate(http_requests_total[10m])) == 0
+          and on(service) (count by (service) (up == 1) > 0)
+        for: 15m
+        labels:
+          severity: info
+          tier: platform
+        annotations:
+          summary: "No HTTP traffic to {{ $labels.service }}"
+          description: "{{ $labels.service }} is up but has received zero requests for 15m. Check Kong routing and upstream callers."
+          runbook: "docs/runbooks/incident-service-down.md"
+
+  # ---------------------------------------------------------------------------
+  - name: cti-runtime-resources
+    rules:
+      - alert: HighMemory
+        # Resident memory above 1.5Gi sustained. Tune per-service requests/limits
+        # against the Infra Blueprint pod resource specs.
+        expr: process_resident_memory_bytes > 1.5e9
+        for: 10m
+        labels:
+          severity: warning
+          tier: platform
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "{{ $labels.job }} resident memory is {{ $value | humanize1024 }}B (>1.5Gi), sustained 10m. Possible leak or under-provisioned limits; risk of OOMKill."
+          runbook: "docs/runbooks/incident-service-down.md"
+          dashboard: "Grafana: Service Health (uid cti-service-health) -> 'Resident memory'"
+
+      - alert: GoroutineLeakSuspected
+        # Goroutine count climbing well past normal for a Go service often signals a
+        # leak (unbounded spawning / blocked goroutines).
+        expr: go_goroutines > 5000
+        for: 15m
+        labels:
+          severity: warning
+          tier: platform
+        annotations:
+          summary: "Possible goroutine leak on {{ $labels.job }}"
+          description: "{{ $labels.job }} has {{ $value }} goroutines (>5000), sustained 15m. Inspect for leaked goroutines (blocked channels, un-cancelled contexts)."
+          runbook: "docs/runbooks/incident-service-down.md"
+          dashboard: "Grafana: Service Health (uid cti-service-health) -> 'Goroutines'"
+
+      - alert: HighCPU
+        # Sustained near-saturation of a CPU core by a single process.
+        expr: rate(process_cpu_seconds_total[5m]) > 0.9
+        for: 15m
+        labels:
+          severity: info
+          tier: platform
+        annotations:
+          summary: "High CPU usage on {{ $labels.job }}"
+          description: "{{ $labels.job }} is consuming {{ $value | humanizePercentage }} of a CPU core, sustained 15m. Review HPA scaling and hot paths."
+          dashboard: "Grafana: Service Health (uid cti-service-health) -> 'CPU usage'"
+
+  # ---------------------------------------------------------------------------
+  - name: cti-tier1-slo
+    # Tier-1 services (Auth, Asset, Alert Engine, Audit) carry a 99.9% uptime SLO
+    # (Arch BP 10.2). A ServiceDown on these escalates faster — encode a stricter,
+    # dedicated alert so on-call can distinguish Tier-1 from Tier-3 outages.
+    rules:
+      - alert: Tier1ServiceDown
+        expr: up{job=~"auth-service|asset-service|alert-engine|audit-service"} == 0
+        for: 1m
+        labels:
+          severity: page
+          tier: tier1
+        annotations:
+          summary: "TIER-1 service {{ $labels.job }} is down"
+          description: "Tier-1 service {{ $labels.job }} (99.9% SLO) has been unscrapable for 1m. Auth/Asset/Alert-Engine/Audit are on the critical path; treat as P1."
+          runbook: "docs/runbooks/incident-service-down.md"

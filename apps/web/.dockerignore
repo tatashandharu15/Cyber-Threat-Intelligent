@@ -1,0 +1,13 @@
+# Build context = apps/web. node_modules and .next are rebuilt inside the image.
+node_modules
+.next
+.git
+.gitignore
+Dockerfile
+.dockerignore
+npm-debug.log*
+.env
+.env.*
+README.md
+CONTEXT.md
+.DS_Store

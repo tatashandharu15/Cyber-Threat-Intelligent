@@ -1,0 +1,23 @@
+# Shared, non-secret environment for every CTI service.
+# Secrets (DATABASE_URL, JWT keys, AUDIT_HMAC_KEY) live in the Secret, sourced in
+# production from Vault / SealedSecrets — see secrets.example.yaml.
+#
+# Config is entirely env-driven (packages/utils/config LoadBase): ENV, LOG_LEVEL,
+# HTTP_PORT, DATABASE_URL, KAFKA_BROKERS, JWT_*, AUDIT_HMAC_KEY, OTEL_*.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cti-config
+  labels:
+    app.kubernetes.io/part-of: cti-platform
+data:
+  ENV: "staging"
+  LOG_LEVEL: "info"
+  # MSK bootstrap brokers (SASL/TLS in prod; staging uses the internal DNS name
+  # from the Infra Blueprint 2.4). Override per-environment in the overlay.
+  KAFKA_BROKERS: "msk.siberindo.internal:9092"
+  # OpenTelemetry OTLP/HTTP collector running in-cluster (Observability 8.3).
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+  # JWT verification algorithm. Prod/staging target is RS256 with a Vault-managed
+  # key pair (Security Blueprint); the public key is mounted from the Secret.
+  JWT_ALG: "RS256"

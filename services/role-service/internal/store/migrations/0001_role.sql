@@ -1,0 +1,16 @@
+-- Role service migration (core_platform identity tables).
+--
+-- IMPORTANT: The Role service does NOT own the identity DDL. The roles,
+-- permissions, role_permissions, and user_roles tables (and their RLS policies)
+-- are created and owned by the Auth service in
+-- services/auth-service/internal/store/migrations/0001_identity.sql. The Role
+-- service is an RBAC management API that operates on those existing tables; it
+-- must never recreate or redefine them.
+--
+-- This file exists only so the Role service's migration runner has a migration to
+-- apply and tracks its own ledger (core_platform.schema_migrations_role), kept
+-- distinct from the Auth service's ledger. The single statement below is purely
+-- additive and idempotent: a convenience index on roles.role_type to speed up the
+-- system-vs-tenant role filtering the management API performs. It does not
+-- conflict with the Auth service's DDL.
+CREATE INDEX IF NOT EXISTS idx_roles_role_type ON core_platform.roles (role_type);

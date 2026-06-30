@@ -1,0 +1,51 @@
+# OpenTelemetry Collector (contrib) configuration for the CTI staging stack.
+#
+# Services export OTLP traces to http://otel-collector:4318 (HTTP) — see the
+# OTEL_EXPORTER_OTLP_ENDPOINT env in docker-compose.prod.yml. The collector
+# also accepts gRPC on :4317. Traces are logged via the debug exporter; a
+# Prometheus exporter on :8889 surfaces the collector's own metrics, which
+# Prometheus scrapes.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # Human-readable trace/metric output to the collector's stdout.
+  debug:
+    verbosity: normal
+  # Re-exposes received OTLP metrics in Prometheus format for scraping.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    send_timestamps: true
+    resource_to_telemetry_conversion:
+      enabled: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]
+  telemetry:
+    logs:
+      level: info

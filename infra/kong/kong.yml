@@ -1,0 +1,206 @@
+# Kong declarative (DB-less) configuration for the SiberIndo CTI MVP backend.
+# Implements API Blueprint section 3 (API Gateway Configuration): JWT validation,
+# per-tenant rate limiting, and request-id propagation, with one route per service.
+#
+# Run (DB-less):
+#   docker run --rm -e "KONG_DATABASE=off" \
+#     -e "KONG_DECLARATIVE_CONFIG=/kong/kong.yml" \
+#     -v "$PWD/infra/kong:/kong" \
+#     -p 8000:8000 kong:3.7
+#
+# Backends use host.docker.internal so Kong (in Docker) can reach services run on
+# the host via `make run-*`. Service ports follow the convention in the Makefile:
+#   auth 8081, user 8082, asset 8083, alert 8084, dlm 8085.
+_format_version: "3.0"
+_transform: true
+
+services:
+  # Auth is public (login/refresh issue tokens); no JWT plugin here.
+  - name: auth-service
+    url: http://host.docker.internal:8081
+    routes:
+      - name: auth-routes
+        paths: ["/v1/auth"]
+        strip_path: false
+
+  - name: user-service
+    url: http://host.docker.internal:8082
+    routes:
+      - name: user-routes
+        paths: ["/v1/users"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: asset-service
+    url: http://host.docker.internal:8083
+    routes:
+      - name: asset-routes
+        paths: ["/v1/assets"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: alert-engine
+    url: http://host.docker.internal:8084
+    routes:
+      - name: alert-routes
+        paths: ["/v1/alerts", "/v1/alert-rules"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: dlm-service
+    url: http://host.docker.internal:8085
+    routes:
+      - name: dlm-routes
+        paths: ["/v1/dlm"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: clm-service
+    url: http://host.docker.internal:8086
+    routes:
+      - name: clm-routes
+        paths: ["/v1/clm"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: dwm-service
+    url: http://host.docker.internal:8087
+    routes:
+      - name: dwm-routes
+        paths: ["/v1/dwm"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: brm-service
+    url: http://host.docker.internal:8088
+    routes:
+      - name: brm-routes
+        paths: ["/v1/brm"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: phm-service
+    url: http://host.docker.internal:8089
+    routes:
+      - name: phm-routes
+        paths: ["/v1/phm"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: investigation-service
+    url: http://host.docker.internal:8090
+    routes:
+      - name: investigation-routes
+        paths: ["/v1/investigations"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: notification-service
+    url: http://host.docker.internal:8091
+    routes:
+      - name: notification-routes
+        paths: ["/v1/notifications", "/v1/notification-preferences"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: audit-service
+    url: http://host.docker.internal:8092
+    routes:
+      - name: audit-routes
+        paths: ["/v1/audit-logs"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: indicator-service
+    url: http://host.docker.internal:8093
+    routes:
+      - name: indicator-routes
+        paths: ["/v1/indicators"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: takedown-service
+    url: http://host.docker.internal:8094
+    routes:
+      - name: takedown-routes
+        paths: ["/v1/takedowns"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: reporting-service
+    url: http://host.docker.internal:8095
+    routes:
+      - name: reporting-routes
+        paths: ["/v1/reports"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: attack-reference-service
+    url: http://host.docker.internal:8096
+    routes:
+      - name: attack-reference-routes
+        paths: ["/v1/attack-reference"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  - name: collection-adapter-manager
+    url: http://host.docker.internal:8097
+    routes:
+      - name: collection-routes
+        paths: ["/v1/collection"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+  # Role service owns role + permission management. User-role assignment under
+  # /v1/users/* is served by user-service at the gateway (role-service also
+  # implements it but is not the gateway owner of the /v1/users prefix).
+  - name: role-service
+    url: http://host.docker.internal:8098
+    routes:
+      - name: role-routes
+        paths: ["/v1/roles", "/v1/permissions"]
+        strip_path: false
+    plugins:
+      - name: jwt
+
+# Global plugins applied to every route.
+plugins:
+  # Generate/propagate X-Request-ID for tracing (API Blueprint 4.2).
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid
+      echo_downstream: true
+
+  # Per-consumer (per-tenant via JWT) sliding-window rate limiting.
+  - name: rate-limiting
+    config:
+      minute: 1000
+      policy: local
+      hide_client_headers: false
+
+# JWT credentials are provisioned per tenant/consumer at deploy time. The HS256
+# secret here must match each service's JWT_SECRET. Services independently verify
+# the JWT as defense-in-depth, so a gateway bypass still cannot reach data.
+consumers:
+  - username: platform
+    jwt_secrets:
+      - algorithm: HS256
+        key: siberindo-cti
+        secret: dev-insecure-jwt-secret-change-me

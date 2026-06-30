@@ -1,0 +1,61 @@
+# Prometheus scrape configuration for the CTI staging stack.
+#
+# All targets are addressed by their docker-compose service DNS on the shared
+# `cti` network. Every Go service exposes /metrics on its HTTP port; the
+# OpenTelemetry Collector re-exports OTLP metrics on :8889; Prometheus scrapes
+# itself for self-monitoring.
+#
+# Alert rules are authored by another agent at alert-rules.yml (mounted next to
+# this file). They are referenced here so Prometheus loads them at startup.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: staging
+
+rule_files:
+  - alert-rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+        labels:
+          component: otel-collector
+
+  # One job per Go service. Targets resolve via compose service DNS.
+  - job_name: cti-services
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["auth-service:8081"]
+        labels: { service: auth-service }
+      - targets: ["user-service:8082"]
+        labels: { service: user-service }
+      - targets: ["asset-service:8083"]
+        labels: { service: asset-service }
+      - targets: ["alert-engine:8084"]
+        labels: { service: alert-engine }
+      - targets: ["dlm-service:8085"]
+        labels: { service: dlm-service }
+      - targets: ["clm-service:8086"]
+        labels: { service: clm-service }
+      - targets: ["dwm-service:8087"]
+        labels: { service: dwm-service }
+      - targets: ["brm-service:8088"]
+        labels: { service: brm-service }
+      - targets: ["phm-service:8089"]
+        labels: { service: phm-service }
+      - targets: ["investigation-service:8090"]
+        labels: { service: investigation-service }
+      - targets: ["notification-service:8091"]
+        labels: { service: notification-service }
+      - targets: ["audit-service:8092"]
+        labels: { service: audit-service }
+      - targets: ["indicator-service:8093"]
+        labels: { service: indicator-service }
+      - targets: ["takedown-service:8094"]
+        labels: { service: takedown-service }

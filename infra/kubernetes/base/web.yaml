@@ -1,0 +1,87 @@
+# apps/web — Next.js 15 analyst workbench (port 3000).
+#
+# The Next proxy (apps/web/next.config.ts) builds each backend destination as
+# `${BACKEND_HOST}:<port>/v1/...`, i.e. ONE host prefix with a per-service port
+# appended (auth :8081 ... takedown :8094). In-cluster every service has its own
+# DNS name, so a single host prefix cannot fan out to all of them on those ports.
+#
+# Faithful options without modifying apps/web:
+#   (a) Point BACKEND_HOST at the Kong gateway and have Kong expose the same
+#       service ports — gateway-mediated, preferred for prod parity; OR
+#   (b) Run a thin in-cluster reverse proxy at one hostname that maps
+#       host:<port> -> <service>:<port>.
+# For the staging foundation we set BACKEND_HOST to the gateway service DNS; the
+# rewrites then resolve through Kong. Adjust if the cluster fronts services
+# directly. (Browser traffic still enters via the Ingress, not this env.)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app: web
+    app.kubernetes.io/part-of: cti-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      nodeSelector:
+        role: api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: web
+          image: cti-web:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: "production"
+            # Single host prefix consumed by next.config.ts rewrites (port is
+            # appended per service). Points at the in-cluster gateway.
+            - name: BACKEND_HOST
+              value: "http://kong-gateway"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels:
+    app: web
+    app.kubernetes.io/part-of: cti-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

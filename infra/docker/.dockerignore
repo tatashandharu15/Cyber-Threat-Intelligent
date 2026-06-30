@@ -1,0 +1,51 @@
+# Build context = repository root (see Dockerfile.service). Keep it lean: the
+# Go build only needs packages/{shared-types,utils} and services/<svc>.
+
+# VCS / tooling
+.git
+.github
+.gitignore
+
+# Node / web (built by apps/web/Dockerfile, not this context)
+**/node_modules
+**/.next
+apps/web/node_modules
+apps/web/.next
+
+# Infra artifacts not needed for a Go build
+infra/observability
+infra/kong
+infra/docker
+
+# Local env / secrets
+**/.env
+**/.env.*
+
+# Documentation and non-code working dirs
+docs
+agents
+checklists
+context
+prompts
+tasks
+tests
+workflows
+knowledge
+evaluations
+product
+handoff
+.ai
+.meta
+.claude
+.cursor
+.trae
+**/*.md
+
+# OS / editor cruft
+.DS_Store
+.vscode
+.idea
+**/*.log
+
+# Test files are not needed to build the server binary
+**/*_test.go

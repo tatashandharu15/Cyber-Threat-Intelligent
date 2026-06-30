@@ -1,0 +1,429 @@
+# Production-shaped staging stack for the SiberIndo CTI platform, sized for a
+# single VM. Brings up the data plane (Postgres, Kafka, Redis), the API gateway
+# (Kong, DB-less), the observability stack (OTel Collector, Prometheus,
+# Grafana), all 14 Go services, and the Next.js web frontend.
+#
+#   # one-time: copy and edit secrets
+#   cp infra/docker/.env.example infra/docker/.env
+#
+#   docker compose -f infra/docker/docker-compose.prod.yml --env-file infra/docker/.env up -d --build
+#
+# Notes on prod vs. staging:
+#   * Production runs three separate Aurora PostgreSQL clusters (core_platform,
+#     monitoring_*, platform_services). For single-VM staging we run ONE
+#     postgres:16 with all schemas created by infra/docker/init/01-init.sql.
+#   * Production runs MSK; staging runs a single-node KRaft Kafka broker.
+#   * JWT defaults to HS256 so the stack runs out of the box. See the commented
+#     RS256 opt-in below and infra/docker/.env.example.
+
+# --- reusable fragments ----------------------------------------------------
+# Common environment shared by every Go service. Per-service overrides add
+# HTTP_PORT and OTEL_SERVICE_NAME.
+x-svc-env: &svc-env
+  ENV: staging
+  LOG_LEVEL: info
+  DATABASE_URL: postgres://cti:cti@postgres:5432/cti?sslmode=disable
+  KAFKA_BROKERS: kafka:9092
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  AUDIT_HMAC_KEY: ${AUDIT_HMAC_KEY:-staging-audit-key}
+  # HS256 (default). The secret is non-default so MustProductionSecrets() passes.
+  JWT_SECRET: ${JWT_SECRET:-staging-jwt-secret}
+  # --- RS256 opt-in (commented) -------------------------------------------
+  # To run RS256 instead of HS256:
+  #   1. Set JWT_ALG=RS256 on every service (here, via the shared block).
+  #   2. Provide JWT_PUBLIC_KEY (PEM PKIX) to every service for verification.
+  #   3. Provide JWT_PRIVATE_KEY (PEM) to auth-service only for signing.
+  # JWT_ALG: ${JWT_ALG:-RS256}
+  # JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-}
+
+# Common build + dependency wiring for every Go service. SERVICE is overridden
+# per service via the build args.
+x-svc-defaults: &svc-defaults
+  restart: unless-stopped
+  networks: [cti]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+    otel-collector:
+      condition: service_started
+  # NOTE: the distroless static images have no shell/wget/curl, so a container
+  # healthcheck hitting /healthz is not possible here. Liveness/readiness are
+  # exposed at /healthz, /ready and /metrics and are scraped/probed externally
+  # (Prometheus, and Kubernetes probes in the real prod deploy).
+
+services:
+  # === data plane =========================================================
+  postgres:
+    image: postgres:16
+    container_name: cti-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cti
+    volumes:
+      - cti-pgdata:/var/lib/postgresql/data
+      # Creates the cti role + per-bounded-context schemas on first start.
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cti"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [cti]
+
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: cti-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      # Advertise the compose DNS name so in-network clients connect correctly.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "cti-staging-cluster-0001"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks: [cti]
+
+  redis:
+    image: redis:7-alpine
+    container_name: cti-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [cti]
+
+  # === API gateway ========================================================
+  kong:
+    image: kong:3.7
+    container_name: cti-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    volumes:
+      # Compose variant whose upstreams use compose DNS, not host.docker.internal.
+      - ../kong/kong.compose.yml:/kong/kong.yml:ro
+    ports:
+      - "8000:8000"
+    networks: [cti]
+
+  # === observability ======================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: cti-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ../observability/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8889:8889" # Prometheus exporter
+    networks: [cti]
+
+  prometheus:
+    image: prom/prometheus
+    container_name: cti-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Alert rules authored by another agent; referenced by prometheus.yml.
+      - ../observability/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - cti-prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [cti]
+
+  grafana:
+    image: grafana/grafana
+    container_name: cti-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON authored by another agent.
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - cti-grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks: [cti]
+
+  # === Go services (one parameterized image per service) ==================
+  auth-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: auth-service
+    image: cti-auth-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8081"
+      OTEL_SERVICE_NAME: auth-service
+      # RS256 signer key goes here when JWT_ALG=RS256 (auth-service only):
+      # JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
+    ports:
+      - "8081:8081"
+
+  user-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: user-service
+    image: cti-user-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8082"
+      OTEL_SERVICE_NAME: user-service
+    ports:
+      - "8082:8082"
+
+  asset-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: asset-service
+    image: cti-asset-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8083"
+      OTEL_SERVICE_NAME: asset-service
+    ports:
+      - "8083:8083"
+
+  alert-engine:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: alert-engine
+    image: cti-alert-engine:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8084"
+      OTEL_SERVICE_NAME: alert-engine
+    ports:
+      - "8084:8084"
+
+  dlm-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: dlm-service
+    image: cti-dlm-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8085"
+      OTEL_SERVICE_NAME: dlm-service
+    ports:
+      - "8085:8085"
+
+  clm-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: clm-service
+    image: cti-clm-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8086"
+      OTEL_SERVICE_NAME: clm-service
+    ports:
+      - "8086:8086"
+
+  dwm-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: dwm-service
+    image: cti-dwm-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8087"
+      OTEL_SERVICE_NAME: dwm-service
+    ports:
+      - "8087:8087"
+
+  brm-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: brm-service
+    image: cti-brm-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8088"
+      OTEL_SERVICE_NAME: brm-service
+    ports:
+      - "8088:8088"
+
+  phm-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: phm-service
+    image: cti-phm-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8089"
+      OTEL_SERVICE_NAME: phm-service
+    ports:
+      - "8089:8089"
+
+  investigation-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: investigation-service
+    image: cti-investigation-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8090"
+      OTEL_SERVICE_NAME: investigation-service
+    ports:
+      - "8090:8090"
+
+  notification-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: notification-service
+    image: cti-notification-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8091"
+      OTEL_SERVICE_NAME: notification-service
+    ports:
+      - "8091:8091"
+
+  audit-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: audit-service
+    image: cti-audit-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8092"
+      OTEL_SERVICE_NAME: audit-service
+    ports:
+      - "8092:8092"
+
+  indicator-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: indicator-service
+    image: cti-indicator-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8093"
+      OTEL_SERVICE_NAME: indicator-service
+    ports:
+      - "8093:8093"
+
+  takedown-service:
+    <<: *svc-defaults
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.service
+      args:
+        SERVICE: takedown-service
+    image: cti-takedown-service:staging
+    environment:
+      <<: *svc-env
+      HTTP_PORT: "8094"
+      OTEL_SERVICE_NAME: takedown-service
+    ports:
+      - "8094:8094"
+
+  # === web frontend =======================================================
+  # Next.js rewrites build per-service upstreams as `${BACKEND_HOST}:<port>`
+  # (see apps/web/next.config.ts), i.e. a SINGLE host that exposes all 14
+  # service ports. No single compose service satisfies that, so the cleanest
+  # fix without changing next.config beyond `output: standalone` is to route
+  # the rewrites at the host gateway, where every service publishes its port
+  # (8081-8094) above. `host.docker.internal` resolves to the host via the
+  # extra_hosts mapping, so e.g. `http://host.docker.internal:8081` reaches
+  # auth-service. (Production fronts everything with Kong on :8000 instead; for
+  # an all-in-gateway setup, point BACKEND_HOST at a proxy that fans out by
+  # path. Kong is available in-network at http://kong:8000.)
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    image: cti-web:staging
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BACKEND_HOST: ${BACKEND_HOST:-http://host.docker.internal}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - kong
+    networks: [cti]
+
+volumes:
+  cti-pgdata:
+  cti-prometheus-data:
+  cti-grafana-data:
+
+networks:
+  cti:
+    driver: bridge

@@ -1,0 +1,37 @@
+# Cluster ingress. All API traffic (/v1/*) goes through the Kong gateway, which
+# enforces JWT + rate limiting and routes by path prefix to each service. All
+# other paths (/) serve the Next.js web app.
+#
+# Production fronts this with an AWS ALB (Infra Blueprint 2.1 / 1.2) + WAF; the
+# rules below are gateway-agnostic and work behind aws-load-balancer-controller
+# or ingress-nginx. The ingressClassName is set in the staging overlay.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cti-ingress
+  labels:
+    app.kubernetes.io/part-of: cti-platform
+  annotations:
+    # ingress-nginx: do not rewrite the path — Kong matches on the full /v1/*.
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  rules:
+    - http:
+        paths:
+          # API: every /v1/* prefix is handled by Kong on its proxy port.
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: kong-gateway
+                port:
+                  number: 8000
+          # Web app (Next.js) serves everything else, including /api/* rewrites
+          # that the app itself proxies to backends.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 3000

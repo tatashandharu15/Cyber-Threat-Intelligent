@@ -1,0 +1,484 @@
+openapi: 3.1.0
+info:
+  title: SiberIndo CTI Role Service API
+  version: "1.0.0"
+  description: >
+    RBAC management API for the SiberIndo CTI platform. The Role service manages
+    roles, role-permission grants, and user-role assignments over the
+    core_platform identity tables (owned by the Auth service). System roles
+    (tenant_id = null, role_type = system) are visible to every tenant but are
+    immutable through this API; this API can only create and manage tenant roles.
+    It is a synchronous identity-management service with no asynchronous events.
+
+    All responses use the platform envelope: successful responses wrap the payload
+    in `{ "data": ..., "meta": { "request_id", "timestamp" } }`; errors return
+    `{ "error": { "code", "message", "details" }, "meta": { "request_id", "timestamp" } }`.
+
+    Read endpoints require the `role:read` permission; mutating endpoints require
+    the `role:manage` permission.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: roles
+  - name: permissions
+  - name: user-roles
+paths:
+  /v1/roles:
+    get:
+      tags: [roles]
+      summary: List roles
+      description: >
+        Returns the roles visible to the caller's tenant: all system roles plus
+        the tenant's own roles. Requires the `role:read` permission.
+      responses:
+        '200':
+          description: A list of roles.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [roles]
+      summary: Create a tenant role
+      description: >
+        Creates a new role scoped to the caller's tenant. The role_type is always
+        forced to `tenant`; this API cannot create system roles. A name colliding
+        with an existing role in the tenant (or a reserved system role name)
+        returns 409 CONFLICT. Requires the `role:manage` permission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRoleRequest' }
+      responses:
+        '201':
+          description: The created role.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Role' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/roles/{id}:
+    get:
+      tags: [roles]
+      summary: Get a role
+      description: Returns a single role visible to the tenant. Requires the `role:read` permission.
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        '200':
+          description: The role.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [roles]
+      summary: Update a tenant role
+      description: >
+        Updates the name and/or description of a tenant role. System roles are
+        immutable and return 422 BUSINESS_RULE_VIOLATION. Requires the
+        `role:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRoleRequest' }
+      responses:
+        '200':
+          description: The updated role.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Role' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+    delete:
+      tags: [roles]
+      summary: Delete a tenant role
+      description: >
+        Deletes a tenant role. System roles are immutable and return 422
+        BUSINESS_RULE_VIOLATION. Requires the `role:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        '200':
+          description: The role was deleted.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+  /v1/roles/{id}/permissions:
+    get:
+      tags: [roles]
+      summary: List a role's permissions
+      description: Returns the permissions granted to a role. Requires the `role:read` permission.
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        '200':
+          description: The role's granted permissions.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Permission' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [roles]
+      summary: Grant a permission to a role
+      description: >
+        Grants a catalog permission to a tenant role. Idempotent. System roles are
+        immutable (422). An unknown permission_id returns 404. Requires the
+        `role:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GrantPermissionRequest' }
+      responses:
+        '200':
+          description: The permission was granted.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+  /v1/roles/{id}/permissions/{permissionId}:
+    delete:
+      tags: [roles]
+      summary: Revoke a permission from a role
+      description: >
+        Removes a permission from a tenant role. Idempotent. System roles are
+        immutable (422). Requires the `role:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/RoleId'
+        - $ref: '#/components/parameters/PermissionId'
+      responses:
+        '200':
+          description: The permission was revoked.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/BusinessRuleViolation' }
+  /v1/permissions:
+    get:
+      tags: [permissions]
+      summary: List the global permission catalog
+      description: >
+        Returns the platform-wide permission catalog (resource/action pairs). Not
+        tenant-scoped. Requires the `role:read` permission.
+      responses:
+        '200':
+          description: The permission catalog.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Permission' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/users/{userId}/roles:
+    get:
+      tags: [user-roles]
+      summary: List a user's roles
+      description: Returns the roles assigned to a user within the tenant. Requires the `role:read` permission.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: The user's assigned roles.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [user-roles]
+      summary: Assign a role to a user
+      description: >
+        Assigns a role (the tenant's own or a system role) to a user within the
+        tenant. A duplicate assignment returns 409 CONFLICT; an unknown role
+        returns 404. Requires the `role:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssignUserRoleRequest' }
+      responses:
+        '201':
+          description: The role was assigned.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/users/{userId}/roles/{roleId}:
+    delete:
+      tags: [user-roles]
+      summary: Remove a role from a user
+      description: >
+        Revokes a role from a user within the tenant. Idempotent. Requires the
+        `role:manage` permission.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/RoleIdPath'
+      responses:
+        '200':
+          description: The role was removed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StatusResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    RoleId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RoleIdPath:
+      name: roleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PermissionId:
+      name: permissionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    RoleType:
+      type: string
+      enum: [system, tenant]
+    Role:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null for system roles; the owning tenant id for tenant roles.
+        name: { type: string, maxLength: 128 }
+        role_type: { $ref: '#/components/schemas/RoleType' }
+        description:
+          type: string
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, tenant_id, name, role_type, created_at, updated_at]
+    Permission:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        resource: { type: string, maxLength: 128 }
+        action: { type: string, maxLength: 64 }
+        description:
+          type: string
+          nullable: true
+        created_at: { type: string, format: date-time }
+      required: [id, resource, action, created_at]
+    CreateRoleRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 128 }
+        description:
+          type: string
+          nullable: true
+    UpdateRoleRequest:
+      type: object
+      description: At least one field should be supplied; nil fields are left unchanged.
+      properties:
+        name: { type: string, maxLength: 128 }
+        description:
+          type: string
+          nullable: true
+    GrantPermissionRequest:
+      type: object
+      required: [permission_id]
+      properties:
+        permission_id: { type: string, format: uuid }
+    AssignUserRoleRequest:
+      type: object
+      required: [role_id]
+      properties:
+        role_id: { type: string, format: uuid }
+    StatusResult:
+      type: object
+      properties:
+        status: { type: string, example: deleted }
+      required: [status]
+    Meta:
+      type: object
+      properties:
+        request_id: { type: string }
+        timestamp: { type: string, format: date-time }
+      required: [request_id, timestamp]
+    SuccessEnvelope:
+      type: object
+      properties:
+        data: {}
+        meta: { $ref: '#/components/schemas/Meta' }
+      required: [data, meta]
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - RESOURCE_NOT_FOUND
+                - CONFLICT
+                - BUSINESS_RULE_VIOLATION
+                - RATE_LIMIT_EXCEEDED
+                - INTERNAL_ERROR
+                - SERVICE_UNAVAILABLE
+            message: { type: string }
+            details: {}
+          required: [code, message]
+        meta: { $ref: '#/components/schemas/Meta' }
+      required: [error, meta]
+  responses:
+    ValidationError:
+      description: The request failed validation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: The token lacks the required permission.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Conflict:
+      description: The write violated a uniqueness constraint.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    BusinessRuleViolation:
+      description: The operation is not permitted (e.g. modifying a system role).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }

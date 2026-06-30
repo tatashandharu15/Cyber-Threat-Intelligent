@@ -1,0 +1,236 @@
+# Kong API Gateway (DB-less) for in-cluster routing.
+#
+# Mirrors infra/kong/kong.yml (one route per service, JWT on protected routes,
+# correlation-id + rate-limiting global plugins) but rewrites the backends from
+# host.docker.internal:<port> to the in-cluster Service DNS <service>.cti:<port>.
+# The original infra/kong/kong.yml is unchanged; this ConfigMap is the cluster
+# variant.
+#
+# Kong listens on :8000 (proxy). Browser/API traffic enters via the Ingress,
+# which forwards /v1/* here; Kong then routes by path prefix to each service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-declarative
+  labels:
+    app: kong-gateway
+    app.kubernetes.io/part-of: cti-platform
+data:
+  kong.yml: |
+    _format_version: "3.0"
+    _transform: true
+    services:
+      - name: auth-service
+        url: http://auth-service.cti.svc.cluster.local:8081
+        routes:
+          - name: auth-routes
+            paths: ["/v1/auth"]
+            strip_path: false
+      - name: user-service
+        url: http://user-service.cti.svc.cluster.local:8082
+        routes:
+          - name: user-routes
+            paths: ["/v1/users"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: asset-service
+        url: http://asset-service.cti.svc.cluster.local:8083
+        routes:
+          - name: asset-routes
+            paths: ["/v1/assets"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: alert-engine
+        url: http://alert-engine.cti.svc.cluster.local:8084
+        routes:
+          - name: alert-routes
+            paths: ["/v1/alerts", "/v1/alert-rules"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: dlm-service
+        url: http://dlm-service.cti.svc.cluster.local:8085
+        routes:
+          - name: dlm-routes
+            paths: ["/v1/dlm"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: clm-service
+        url: http://clm-service.cti.svc.cluster.local:8086
+        routes:
+          - name: clm-routes
+            paths: ["/v1/clm"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: dwm-service
+        url: http://dwm-service.cti.svc.cluster.local:8087
+        routes:
+          - name: dwm-routes
+            paths: ["/v1/dwm"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: brm-service
+        url: http://brm-service.cti.svc.cluster.local:8088
+        routes:
+          - name: brm-routes
+            paths: ["/v1/brm"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: phm-service
+        url: http://phm-service.cti.svc.cluster.local:8089
+        routes:
+          - name: phm-routes
+            paths: ["/v1/phm"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: investigation-service
+        url: http://investigation-service.cti.svc.cluster.local:8090
+        routes:
+          - name: investigation-routes
+            paths: ["/v1/investigations"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: notification-service
+        url: http://notification-service.cti.svc.cluster.local:8091
+        routes:
+          - name: notification-routes
+            paths: ["/v1/notifications", "/v1/notification-preferences"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: audit-service
+        url: http://audit-service.cti.svc.cluster.local:8092
+        routes:
+          - name: audit-routes
+            paths: ["/v1/audit-logs"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: indicator-service
+        url: http://indicator-service.cti.svc.cluster.local:8093
+        routes:
+          - name: indicator-routes
+            paths: ["/v1/indicators"]
+            strip_path: false
+        plugins:
+          - name: jwt
+      - name: takedown-service
+        url: http://takedown-service.cti.svc.cluster.local:8094
+        routes:
+          - name: takedown-routes
+            paths: ["/v1/takedowns"]
+            strip_path: false
+        plugins:
+          - name: jwt
+    plugins:
+      - name: correlation-id
+        config:
+          header_name: X-Request-ID
+          generator: uuid
+          echo_downstream: true
+      - name: rate-limiting
+        config:
+          minute: 1000
+          policy: local
+          hide_client_headers: false
+    consumers:
+      - username: platform
+        jwt_secrets:
+          # Staging credential placeholder. Provision real per-tenant JWT
+          # credentials (RS256 with the Vault-managed public key) at deploy time.
+          - algorithm: HS256
+            key: siberindo-cti
+            secret: REPLACE_ME_VIA_VAULT
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong-gateway
+  labels:
+    app: kong-gateway
+    app.kubernetes.io/part-of: cti-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kong-gateway
+  template:
+    metadata:
+      labels:
+        app: kong-gateway
+    spec:
+      nodeSelector:
+        # Gateway runs on the system node group with cluster infrastructure
+        # (Infra Blueprint 3.2: Kong Ingress Controller on `system`).
+        role: system
+      containers:
+        - name: kong
+          image: kong:3.7
+          env:
+            - name: KONG_DATABASE
+              value: "off"
+            - name: KONG_DECLARATIVE_CONFIG
+              value: "/kong/declarative/kong.yml"
+            - name: KONG_PROXY_LISTEN
+              value: "0.0.0.0:8000"
+            - name: KONG_ADMIN_LISTEN
+              value: "0.0.0.0:8001"
+          ports:
+            - name: proxy
+              containerPort: 8000
+            - name: admin
+              containerPort: 8001
+          volumeMounts:
+            - name: kong-declarative
+              mountPath: /kong/declarative
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: admin
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: kong-declarative
+          configMap:
+            name: kong-declarative
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-gateway
+  labels:
+    app: kong-gateway
+    app.kubernetes.io/part-of: cti-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: kong-gateway
+  ports:
+    - name: proxy
+      port: 80
+      targetPort: proxy
+    - name: proxy-explicit
+      port: 8000
+      targetPort: proxy

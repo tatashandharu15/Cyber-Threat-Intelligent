@@ -1,0 +1,6 @@
+# E2E tests are linted/typechecked by Playwright's own toolchain, not by
+# `next lint` (which only governs the app source under src/).
+e2e/
+playwright.config.ts
+playwright-report/
+test-results/

@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and fill in. Do NOT commit a real terraform.tfvars
+# with secrets. Prefer environment variables (TF_VAR_db_password) or a secret
+# manager / Vault-issued dynamic credential over a file on disk.
+
+region             = "ap-southeast-1"
+kubernetes_version = "1.29"
+
+# Master DB password. Leave OUT of version control. Example only:
+#   export TF_VAR_db_password='...'   (preferred)
+db_password = "REPLACE_ME_use_TF_VAR_db_password_or_secret_manager"

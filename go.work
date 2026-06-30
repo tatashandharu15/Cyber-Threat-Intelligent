@@ -1,0 +1,24 @@
+go 1.25.0
+
+use (
+	./packages/shared-types
+	./packages/utils
+	./services/alert-engine
+	./services/asset-service
+	./services/attack-reference-service
+	./services/audit-service
+	./services/auth-service
+	./services/brm-service
+	./services/clm-service
+	./services/collection-adapter-manager
+	./services/dlm-service
+	./services/dwm-service
+	./services/indicator-service
+	./services/investigation-service
+	./services/notification-service
+	./services/phm-service
+	./services/reporting-service
+	./services/role-service
+	./services/takedown-service
+	./services/user-service
+)

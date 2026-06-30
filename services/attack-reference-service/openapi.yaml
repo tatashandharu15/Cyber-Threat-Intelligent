@@ -1,0 +1,121 @@
+openapi: 3.1.0
+info:
+  title: SiberIndo CTI — ATT&CK Reference Service
+  version: "1.0.0"
+  description: >
+    Global MITRE ATT&CK technique reference data (not tenant-scoped). Provides
+    read access to techniques and an authenticated sync endpoint. All responses use
+    the platform `{data, meta}` success envelope and `{error, meta}` error envelope.
+servers:
+  - url: /v1/attack-reference
+security:
+  - bearerAuth: []
+paths:
+  /techniques:
+    get:
+      summary: List ATT&CK techniques
+      description: Requires the `attack:read` permission.
+      parameters:
+        - { name: tactic, in: query, schema: { type: string }, description: Filter by tactic short-name (matches any of tactic_refs) }
+        - { name: search, in: query, schema: { type: string }, description: Case-insensitive match on technique_id or name }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: A list of techniques
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Technique" } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /techniques/{techniqueId}:
+    get:
+      summary: Get one ATT&CK technique by its technique id (e.g. T1566)
+      description: Requires the `attack:read` permission.
+      parameters:
+        - { name: techniqueId, in: path, required: true, schema: { type: string }, example: "T1566" }
+      responses:
+        "200":
+          description: The technique
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Technique" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "404": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /sync:
+    post:
+      summary: Sync ATT&CK techniques (upsert)
+      description: >
+        Requires the `attack:manage` permission. With a `techniques` array the given
+        techniques are validated and upserted by `technique_id`. With an empty/absent
+        body the built-in default technique set is seeded.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                techniques:
+                  type: array
+                  items: { $ref: "#/components/schemas/Technique" }
+      responses:
+        "200":
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties: { inserted: { type: integer } }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+                  details: { type: object, additionalProperties: true, nullable: true }
+              meta: { $ref: "#/components/schemas/Meta" }
+  schemas:
+    Meta:
+      type: object
+      properties:
+        request_id: { type: string }
+        timestamp: { type: string, format: date-time }
+    Technique:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        technique_id: { type: string, example: "T1566" }
+        name: { type: string, example: "Phishing" }
+        description: { type: string }
+        tactic_refs: { type: array, items: { type: string }, example: ["initial-access"] }
+        platform_refs: { type: array, items: { type: string } }
+        is_subtechnique: { type: boolean }
+        parent_technique_id: { type: string, nullable: true, example: "T1566" }
+        stix_id: { type: string, nullable: true }
+        last_synced_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }

@@ -1,0 +1,45 @@
+# Parameterized multi-stage build for every Go service in the SiberIndo CTI
+# platform. The build context MUST be the repository root so the two shared
+# packages and the target service are available at their workspace-relative
+# paths:
+#
+#   docker build -f infra/docker/Dockerfile.service \
+#     --build-arg SERVICE=auth-service -t cti-auth-service:staging .
+#
+# Each service builds in module mode with GOWORK=off; the per-service go.mod
+# `replace` directives resolve the shared packages from ../../packages/*, which
+# is exactly the layout copied below.
+ARG SERVICE
+
+# --- builder ---------------------------------------------------------------
+FROM golang:1.25-bookworm AS builder
+ARG SERVICE
+WORKDIR /src
+
+# Shared packages first (changes here invalidate fewer layers than service code).
+COPY packages/shared-types ./packages/shared-types
+COPY packages/utils ./packages/utils
+
+# The target service source.
+COPY services/${SERVICE} ./services/${SERVICE}
+
+WORKDIR /src/services/${SERVICE}
+# Static, stripped, reproducible binary. CGO disabled so it runs on distroless
+# static (no libc). Network is available here for module download.
+#
+# -mod=mod lets `go build` complete any go.sum entries that are missing for
+# transitive dependencies in module mode. The repo builds green under the Go
+# workspace (`make build`), but individual service go.sum files don't all carry
+# every transitive /go.mod hash that GOWORK=off requires; -mod=mod fills them in
+# from the module cache inside the build only (the repo is never modified).
+RUN GOWORK=off CGO_ENABLED=0 GOOS=linux \
+    go build -mod=mod -trimpath -ldflags="-s -w" -o /out/app ./cmd/server
+
+# --- final -----------------------------------------------------------------
+# distroless static: no shell, no package manager; runs as an unprivileged
+# user (nonroot, uid 65532). Suitable only for static (CGO_ENABLED=0) binaries.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /out/app /app
+USER nonroot
+# Port varies per service (8081-8094); declared in docker-compose instead.
+ENTRYPOINT ["/app"]

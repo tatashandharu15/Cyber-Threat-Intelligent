@@ -1,0 +1,67 @@
+# Staging overlay. Pins the namespace, the ECR registry + image tags, and a
+# common name suffix/labels. Replace REGISTRY (newName) and newTag with the
+# Terraform ECR output / CI image SHA at deploy time.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cti
+
+resources:
+  - ../../base
+
+# Label every resource with the environment (not added to selectors, so
+# Deployment/Service selectors stay immutable across redeploys).
+labels:
+  - pairs:
+      app.kubernetes.io/environment: staging
+    includeSelectors: false
+
+# Map the placeholder image names in base/ to the staging ECR registry + tag.
+# REGISTRY stands in for {account}.dkr.ecr.ap-southeast-1.amazonaws.com (Infra
+# Blueprint 7.2). CI overrides newTag with the git SHA; never use :latest in prod.
+images:
+  - name: cti-auth-service
+    newName: REGISTRY/cti-auth-service
+    newTag: staging
+  - name: cti-user-service
+    newName: REGISTRY/cti-user-service
+    newTag: staging
+  - name: cti-asset-service
+    newName: REGISTRY/cti-asset-service
+    newTag: staging
+  - name: cti-alert-engine
+    newName: REGISTRY/cti-alert-engine
+    newTag: staging
+  - name: cti-dlm-service
+    newName: REGISTRY/cti-dlm-service
+    newTag: staging
+  - name: cti-clm-service
+    newName: REGISTRY/cti-clm-service
+    newTag: staging
+  - name: cti-dwm-service
+    newName: REGISTRY/cti-dwm-service
+    newTag: staging
+  - name: cti-brm-service
+    newName: REGISTRY/cti-brm-service
+    newTag: staging
+  - name: cti-phm-service
+    newName: REGISTRY/cti-phm-service
+    newTag: staging
+  - name: cti-investigation-service
+    newName: REGISTRY/cti-investigation-service
+    newTag: staging
+  - name: cti-notification-service
+    newName: REGISTRY/cti-notification-service
+    newTag: staging
+  - name: cti-audit-service
+    newName: REGISTRY/cti-audit-service
+    newTag: staging
+  - name: cti-indicator-service
+    newName: REGISTRY/cti-indicator-service
+    newTag: staging
+  - name: cti-takedown-service
+    newName: REGISTRY/cti-takedown-service
+    newTag: staging
+  - name: cti-web
+    newName: REGISTRY/cti-web
+    newTag: staging

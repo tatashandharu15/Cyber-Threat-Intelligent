@@ -1,0 +1,12 @@
+# Namespace for all SiberIndo CTI/DRP application services.
+# In production the blueprint splits workloads across cti-platform /
+# cti-collection / cti-dwm-isolated namespaces (Infra Blueprint 5.1); for the
+# staging foundation a single `cti` namespace keeps the manifests simple while
+# node-group scheduling is handled via nodeSelectors on each Deployment.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cti
+  labels:
+    app.kubernetes.io/part-of: cti-platform
+    app.kubernetes.io/managed-by: kustomize

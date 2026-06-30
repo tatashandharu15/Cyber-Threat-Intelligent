@@ -1,0 +1,28 @@
+# Kustomize base for the SiberIndo CTI platform. Environment overlays
+# (overlays/staging) set the namespace, image registry/tags, and ingress class.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secrets.example.yaml
+  - kong.yaml
+  - web.yaml
+  - ingress.yaml
+  - hpa.yaml
+  # 14 Go services (Deployment + ClusterIP Service each).
+  - services/auth-service.yaml
+  - services/user-service.yaml
+  - services/asset-service.yaml
+  - services/alert-engine.yaml
+  - services/dlm-service.yaml
+  - services/clm-service.yaml
+  - services/dwm-service.yaml
+  - services/brm-service.yaml
+  - services/phm-service.yaml
+  - services/investigation-service.yaml
+  - services/notification-service.yaml
+  - services/audit-service.yaml
+  - services/indicator-service.yaml
+  - services/takedown-service.yaml
